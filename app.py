@@ -192,7 +192,7 @@ def is_valid_name(name):
     if any(term in name.lower() for term in invalid_terms):
         return False
     
-    if not re.match(r"^[a-zA-Z\s-']+$", name):
+    if not re.match(r"^[a-zA-Z\s\-']+$", name):
         return False
     
     return True
