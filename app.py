@@ -124,58 +124,100 @@ def preprocess_text(text, stop_words):
         return " ".join(tokens)
     except Exception:
         return text
-
 def extract_name(text):
-    """Extract name using improved pattern matching"""
-    # Split text into lines and look for name patterns
-    lines = text.split('\n')[:10]  # Check first 10 lines only
-    
-    # Common patterns for names in resumes
+    """Extract name using regex + fallbacks"""
+    lines = text.split('\n')[:15]  # Check first 15 lines
     name_patterns = [
-    # Start of line (supports middle names and all caps)
-    r'^([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})(?:\s|$)',
-    
-    # After "Name:" (supports middle names)
-    r'Name[:\s]+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})',
-    
-    # Standalone names (supports 2–4 words, also all caps)
-    r'([A-Z][a-z]{2,}(?:\s+[A-Z][a-z]{2,}){1,3})(?:\s*\n|\s*$)',
-    
-    # All-uppercase names
-    r'([A-Z]{2,}(?:\s+[A-Z]{2,}){1,3})(?:\s*\n|\s*$)',
-     ]
-
-    # name_patterns = [
-    #     r'^([A-Z][a-z]+\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)(?:\s|$)',  # Start of line
-    #     r'Name[:\s]+([A-Z][a-z]+\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)',  # After "Name:"
-    #     r'([A-Z][a-z]{2,}\s+[A-Z][a-z]{2,})(?:\s*\n|\s*$)',  # Standalone names
-    # ]
-    
-    # Words that definitely indicate this is NOT a name
+        r'^([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})(?:\s|$)',
+        r'Name[:\s]+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})',
+        r'([A-Z][a-z]{2,}(?:\s+[A-Z][a-z]{2,}){1,3})(?:\s*\n|\s*$)',
+        r'([A-Z]{2,}(?:\s+[A-Z]{2,}){1,3})(?:\s*\n|\s*$)',  # All caps
+    ]
     non_name_indicators = {
-        'object', 'oriented', 'analysis', 'information', 'technology', 
-        'business', 'systems', 'analyst', 'software', 'developer', 'engineer',
-        'resume', 'curriculum', 'vitae', 'profile', 'summary', 'objective',
-        'education', 'experience', 'skills', 'projects', 'work', 'employment',
-        'professional', 'technical', 'senior', 'junior', 'lead', 'manager',
-        'consultant', 'specialist', 'architect', 'designer', 'coordinator'
+        'resume', 'developer', 'engineer', 'profile', 'summary',
+        'skills', 'objective', 'experience', 'project', 'curriculum',
+        'vitae', 'technologies', 'professional'
     }
-    
+
+    # Try regex patterns
     for line in lines:
         line = line.strip()
-        if not line or len(line) < 5:  # Skip very short lines
+        if not line or len(line) < 3:
             continue
-            
         for pattern in name_patterns:
-            match = re.search(pattern, line, re.MULTILINE)
+            match = re.search(pattern, line, re.IGNORECASE)
             if match:
                 potential_name = match.group(1).strip()
-                
-                # Check if it's a valid name
                 if is_valid_name(potential_name, non_name_indicators):
                     return potential_name
-    
+
+    # Fallback 1: first clean line
+    for line in lines:
+        if line and all(word.lower() not in non_name_indicators for word in line.split()):
+            if 2 <= len(line.split()) <= 4:
+                return line.strip().title()
+
+    # Fallback 2: infer from email prefix
+    email = extract_email(text)
+    if email != "Not Found":
+        prefix = email.split('@')[0]
+        parts = re.split(r'[._]', prefix)
+        if len(parts) >= 2:
+            return " ".join([p.capitalize() for p in parts[:2]])
+
     return "Unknown"
+
+# def extract_name(text):
+#     """Extract name using improved pattern matching"""
+#     # Split text into lines and look for name patterns
+#     lines = text.split('\n')[:10]  # Check first 10 lines only
+    
+#     # Common patterns for names in resumes
+#     name_patterns = [
+#     # Start of line (supports middle names and all caps)
+#     r'^([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})(?:\s|$)',
+    
+#     # After "Name:" (supports middle names)
+#     r'Name[:\s]+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})',
+    
+#     # Standalone names (supports 2–4 words, also all caps)
+#     r'([A-Z][a-z]{2,}(?:\s+[A-Z][a-z]{2,}){1,3})(?:\s*\n|\s*$)',
+    
+#     # All-uppercase names
+#     r'([A-Z]{2,}(?:\s+[A-Z]{2,}){1,3})(?:\s*\n|\s*$)',
+#      ]
+
+#     # name_patterns = [
+#     #     r'^([A-Z][a-z]+\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)(?:\s|$)',  # Start of line
+#     #     r'Name[:\s]+([A-Z][a-z]+\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)',  # After "Name:"
+#     #     r'([A-Z][a-z]{2,}\s+[A-Z][a-z]{2,})(?:\s*\n|\s*$)',  # Standalone names
+#     # ]
+    
+#     # Words that definitely indicate this is NOT a name
+#     non_name_indicators = {
+#         'object', 'oriented', 'analysis', 'information', 'technology', 
+#         'business', 'systems', 'analyst', 'software', 'developer', 'engineer',
+#         'resume', 'curriculum', 'vitae', 'profile', 'summary', 'objective',
+#         'education', 'experience', 'skills', 'projects', 'work', 'employment',
+#         'professional', 'technical', 'senior', 'junior', 'lead', 'manager',
+#         'consultant', 'specialist', 'architect', 'designer', 'coordinator'
+#     }
+    
+#     for line in lines:
+#         line = line.strip()
+#         if not line or len(line) < 5:  # Skip very short lines
+#             continue
+            
+#         for pattern in name_patterns:
+#             match = re.search(pattern, line, re.MULTILINE)
+#             if match:
+#                 potential_name = match.group(1).strip()
+                
+#                 # Check if it's a valid name
+#                 if is_valid_name(potential_name, non_name_indicators):
+#                     return potential_name
+    
+#     return "Unknown"
 
 def is_valid_name(name, non_name_indicators):
     """Check if extracted name is valid with improved filtering"""
