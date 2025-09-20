@@ -132,10 +132,24 @@ def extract_name(text):
     
     # Common patterns for names in resumes
     name_patterns = [
-        r'^([A-Z][a-z]+\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)(?:\s|$)',  # Start of line
-        r'Name[:\s]+([A-Z][a-z]+\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)',  # After "Name:"
-        r'([A-Z][a-z]{2,}\s+[A-Z][a-z]{2,})(?:\s*\n|\s*$)',  # Standalone names
-    ]
+    # Start of line (supports middle names and all caps)
+    r'^([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})(?:\s|$)',
+    
+    # After "Name:" (supports middle names)
+    r'Name[:\s]+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})',
+    
+    # Standalone names (supports 2–4 words, also all caps)
+    r'([A-Z][a-z]{2,}(?:\s+[A-Z][a-z]{2,}){1,3})(?:\s*\n|\s*$)',
+    
+    # All-uppercase names
+    r'([A-Z]{2,}(?:\s+[A-Z]{2,}){1,3})(?:\s*\n|\s*$)',
+     ]
+
+    # name_patterns = [
+    #     r'^([A-Z][a-z]+\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)(?:\s|$)',  # Start of line
+    #     r'Name[:\s]+([A-Z][a-z]+\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)',  # After "Name:"
+    #     r'([A-Z][a-z]{2,}\s+[A-Z][a-z]{2,})(?:\s*\n|\s*$)',  # Standalone names
+    # ]
     
     # Words that definitely indicate this is NOT a name
     non_name_indicators = {
