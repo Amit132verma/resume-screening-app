@@ -126,20 +126,67 @@ def preprocess_text(text, stop_words):
         return text
 
 def extract_name(text):
-    """Extract name using pattern matching"""
-    patterns = [
-        r"([A-Z][a-z]+\s[A-Z][a-z]+(?:\s[A-Z][a-z]+)?)",
-        r"Name[:\s]+([A-Z][a-z]+\s[A-Z][a-z]+)",
-        r"^([A-Z][a-z]+\s[A-Z][a-z]+)"
+    """Extract name using improved pattern matching"""
+    # Split text into lines and look for name patterns
+    lines = text.split('\n')[:10]  # Check first 10 lines only
+    
+    # Common patterns for names in resumes
+    name_patterns = [
+        r'^([A-Z][a-z]+\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)(?:\s|$)',  # Start of line
+        r'Name[:\s]+([A-Z][a-z]+\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)',  # After "Name:"
+        r'([A-Z][a-z]{2,}\s+[A-Z][a-z]{2,})(?:\s*\n|\s*$)',  # Standalone names
     ]
     
-    for pattern in patterns:
-        match = re.search(pattern, text, re.MULTILINE)
-        if match:
-            name = match.group(1).strip()
-            if is_valid_name(name):
-                return name
+    # Words that definitely indicate this is NOT a name
+    non_name_indicators = {
+        'object', 'oriented', 'analysis', 'information', 'technology', 
+        'business', 'systems', 'analyst', 'software', 'developer', 'engineer',
+        'resume', 'curriculum', 'vitae', 'profile', 'summary', 'objective',
+        'education', 'experience', 'skills', 'projects', 'work', 'employment',
+        'professional', 'technical', 'senior', 'junior', 'lead', 'manager',
+        'consultant', 'specialist', 'architect', 'designer', 'coordinator'
+    }
+    
+    for line in lines:
+        line = line.strip()
+        if not line or len(line) < 5:  # Skip very short lines
+            continue
+            
+        for pattern in name_patterns:
+            match = re.search(pattern, line, re.MULTILINE)
+            if match:
+                potential_name = match.group(1).strip()
+                
+                # Check if it's a valid name
+                if is_valid_name(potential_name, non_name_indicators):
+                    return potential_name
+    
     return "Unknown"
+
+def is_valid_name(name, non_name_indicators):
+    """Check if extracted name is valid with improved filtering"""
+    if len(name.split()) < 2:
+        return False
+    
+    # Check against non-name indicators
+    name_lower = name.lower()
+    if any(indicator in name_lower for indicator in non_name_indicators):
+        return False
+    
+    # Must contain only letters, spaces, hyphens, apostrophes
+    if not re.match(r"^[a-zA-Z\s\-']+$", name):
+        return False
+    
+    # Each word should be reasonably long (not just initials)
+    words = name.split()
+    if any(len(word) < 2 for word in words):
+        return False
+        
+    # Should not be all uppercase (likely a header)
+    if name.isupper():
+        return False
+    
+    return True
 
 def extract_email(text):
     """Extract email address"""
@@ -178,24 +225,6 @@ def extract_experience(text):
         if match:
             return f"{match.group(1)} years"
     return "Not specified"
-
-def is_valid_name(name):
-    """Check if extracted name is valid"""
-    invalid_terms = {
-        "resume", "cv", "curriculum", "vitae", "profile", "summary",
-        "objective", "education", "experience", "skills", "projects"
-    }
-    
-    if len(name.split()) < 2:
-        return False
-    
-    if any(term in name.lower() for term in invalid_terms):
-        return False
-    
-    if not re.match(r"^[a-zA-Z\s\-']+$", name):
-        return False
-    
-    return True
 
 def process_resume(file_content, filename, stop_words):
     """Process a single resume and extract information"""
@@ -383,14 +412,6 @@ def main():
                 resume_data = process_resume(uploaded_file, uploaded_file.name, stop_words)
                 
                 if resume_data:
-                    # Calculate similarity scores
-                    scores = calculate_hybrid_score(
-                        resume_data['raw_text'], 
-                        job_description, 
-                        sbert_model, 
-                        stop_words
-                    )
-                    resume_data['scores'] = scores
                     candidates_data.append(resume_data)
                 
                 # Clean up temporary file
@@ -399,6 +420,9 @@ def main():
             if not candidates_data:
                 st.error("No valid resumes could be processed.")
                 return
+            
+            # Calculate scores for all candidates at once
+            candidates_data = calculate_all_hybrid_scores(candidates_data, job_description, sbert_model, stop_words)
             
             # Sort candidates by hybrid score
             candidates_data.sort(key=lambda x: x['scores']['hybrid_score'], reverse=True)
