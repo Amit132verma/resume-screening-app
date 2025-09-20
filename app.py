@@ -1,4 +1,4 @@
-import streamlit as st
+# Full Streamlit app with improved name extraction (replace your app with this)
 import os
 import re
 import nltk
@@ -6,18 +6,16 @@ import docx
 import pdfplumber
 import pandas as pd
 import numpy as np
+import tempfile
+import streamlit as st
+
 from nltk.corpus import stopwords
 from nltk.tokenize import word_tokenize
 from sentence_transformers import SentenceTransformer, util
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.preprocessing import MinMaxScaler
-import matplotlib.pyplot as plt
-import seaborn as sns
-import tempfile
-import plotly.express as px
 import plotly.graph_objects as go
-from io import BytesIO
 
 # Page config
 st.set_page_config(
@@ -27,95 +25,134 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS
+# (Your CSS omitted for brevity - include your CSS block here if needed)
 st.markdown("""
 <style>
 .main-header {
-    font-size: 3rem;
+    font-size: 2.2rem;
     color: #1f77b4;
     text-align: center;
-    margin-bottom: 2rem;
+    margin-bottom: 1rem;
 }
 .sub-header {
-    font-size: 1.5rem;
+    font-size: 1.1rem;
     color: #666;
     text-align: center;
-    margin-bottom: 3rem;
+    margin-bottom: 1.5rem;
 }
 .candidate-card {
     background: linear-gradient(145deg, #f0f2f6, #ffffff);
-    padding: 1.5rem;
-    border-radius: 15px;
-    margin: 1rem 0;
-    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    padding: 1rem;
+    border-radius: 12px;
+    margin: 0.8rem 0;
+    box-shadow: 0 3px 6px rgba(0, 0, 0, 0.06);
     border-left: 4px solid #1f77b4;
 }
 .score-badge {
     display: inline-block;
     background: #1f77b4;
     color: white;
-    padding: 0.3rem 0.8rem;
+    padding: 0.25rem 0.6rem;
     border-radius: 20px;
     font-weight: bold;
-    margin-left: 1rem;
+    margin-left: 0.5rem;
+    font-size: 0.9rem;
 }
 </style>
 """, unsafe_allow_html=True)
 
 @st.cache_resource
 def load_models():
-    """Load and cache models"""
+    """Load and cache models (NLTK downloads, SBERT and spaCy)."""
     try:
-        # Download NLTK data
+        # NLTK
         nltk.download("punkt", quiet=True)
         nltk.download("stopwords", quiet=True)
         nltk.download('wordnet', quiet=True)
-        
-        # Load stopwords
         stop_words = set(stopwords.words("english"))
-        
-        # Load SBERT model
-        sbert_model = SentenceTransformer('all-MiniLM-L6-v2')
-        
-        return stop_words, sbert_model
-    except Exception as e:
-        st.error(f"Error loading models: {e}")
-        return set(), None
+    except Exception:
+        stop_words = set()
 
-# Skills database
+    # SBERT
+    try:
+        sbert_model = SentenceTransformer('all-MiniLM-L6-v2')
+    except Exception as e:
+        st.error(f"Error loading SBERT model: {e}")
+        sbert_model = None
+
+    # spaCy (try to load model; if missing, download it)
+    try:
+        import spacy
+        try:
+            nlp = spacy.load("en_core_web_sm")
+        except Exception:
+            # Download if not available
+            import spacy.cli
+            spacy.cli.download("en_core_web_sm")
+            nlp = spacy.load("en_core_web_sm")
+    except Exception as e:
+        st.warning(f"spaCy not available or failed to load: {e}. Name extraction will fall back to regex/email heuristics.")
+        nlp = None
+
+    return stop_words, sbert_model, nlp
+
+# Skills db
 SKILLS_DB = {
-    "python", "java", "sql", "machine learning", "nlp", "deep learning", 
+    "python", "java", "sql", "machine learning", "nlp", "deep learning",
     "excel", "c++", "cloud", "aws", "javascript", "react", "node.js",
     "docker", "kubernetes", "tensorflow", "pytorch", "pandas", "numpy",
     "git", "html", "css", "mongodb", "postgresql", "rest api", "graphql",
     "spring boot", "hibernate", "angular", "vue.js", "django", "flask"
 }
 
+# Text extraction
 def extract_text_from_pdf(pdf_file):
-    """Extract text from uploaded PDF file"""
+    """Extract text from uploaded PDF file or file path"""
     text = ""
     try:
+        # pdfplumber accepts path or file-like bytes buffer
         with pdfplumber.open(pdf_file) as pdf:
             for page in pdf.pages:
                 page_text = page.extract_text()
                 if page_text:
                     text += page_text + "\n"
     except Exception as e:
-        st.error(f"Error reading PDF: {e}")
+        # handle file-like objects by writing to temp file if needed
+        try:
+            # try to detect if pdf_file is bytes-like (Streamlit UploadFile)
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+            tmp.write(pdf_file.getvalue())
+            tmp.close()
+            with pdfplumber.open(tmp.name) as pdf:
+                for page in pdf.pages:
+                    page_text = page.extract_text()
+                    if page_text:
+                        text += page_text + "\n"
+            os.unlink(tmp.name)
+        except Exception as e2:
+            st.error(f"Error reading PDF: {e} / {e2}")
     return text.strip()
 
 def extract_text_from_docx(docx_file):
-    """Extract text from uploaded DOCX file"""
+    """Extract text from uploaded DOCX or file path"""
     try:
-        doc = docx.Document(docx_file)
-        text = "\n".join([para.text for para in doc.paragraphs])
+        # python-docx can read a path or file-like with .getvalue()
+        try:
+            doc = docx.Document(docx_file)
+        except Exception:
+            # fallback: write bytes to temp file
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".docx")
+            tmp.write(docx_file.getvalue())
+            tmp.close()
+            doc = docx.Document(tmp.name)
+            os.unlink(tmp.name)
+        text = "\n".join([para.text for para in doc.paragraphs if para.text.strip()])
         return text
     except Exception as e:
         st.error(f"Error reading DOCX: {e}")
         return ""
 
 def preprocess_text(text, stop_words):
-    """Clean and tokenize text"""
     text = text.lower()
     text = re.sub(r'\W+', ' ', text)
     try:
@@ -124,184 +161,179 @@ def preprocess_text(text, stop_words):
         return " ".join(tokens)
     except Exception:
         return text
-def extract_name(text):
-    """Extract name using regex + fallbacks"""
-    lines = text.split('\n')[:15]  # Check first 15 lines
-    name_patterns = [
-        r'^([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})(?:\s|$)',
-        r'Name[:\s]+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})',
-        r'([A-Z][a-z]{2,}(?:\s+[A-Z][a-z]{2,}){1,3})(?:\s*\n|\s*$)',
-        r'([A-Z]{2,}(?:\s+[A-Z]{2,}){1,3})(?:\s*\n|\s*$)',  # All caps
-    ]
+
+# Improved name extraction
+def is_valid_name_candidate(name, non_name_indicators):
+    """Heuristic checks for candidate validity."""
+    if not name or len(name.strip()) < 3:
+        return False
+
+    words = name.split()
+    if len(words) < 2 or len(words) > 4:
+        return False
+
+    # No digits
+    if re.search(r'\d', name):
+        return False
+
+    name_lower = name.lower()
+    for bad in non_name_indicators:
+        if bad in name_lower:
+            return False
+
+    # only letters, spaces, hyphens, apostrophes allowed
+    if not re.match(r"^[A-Za-z\s\-\']+$", name):
+        return False
+
+    # each token should be >=2 characters (allow initials rarely)
+    for w in words:
+        if len(w.strip(".'-")) < 2:
+            return False
+
+    return True
+
+def extract_name(text, nlp=None):
+    """
+    Robust name extraction:
+      1. Check labeled lines like 'Name:'
+      2. Regex Title Case / ALL CAPS patterns in the first 20 lines
+      3. spaCy PERSON entities (if nlp provided)
+      4. Email-prefix fallback (john.doe -> John Doe)
+      5. First non-heading line fallback (safely)
+    """
+    if not text or not text.strip():
+        return "Unknown"
+
     non_name_indicators = {
-        'resume', 'developer', 'engineer', 'profile', 'summary',
-        'skills', 'objective', 'experience', 'project', 'curriculum',
-        'vitae', 'technologies', 'professional'
+        'resume', 'curriculum', 'vitae', 'objective', 'summary', 'profile',
+        'skills', 'experience', 'education', 'projects', 'employment', 'work',
+        'company', 'employer', 'employer details', 'responsibilities', 'role',
+        'roles', 'manager', 'developer', 'engineer', 'programmer', 'consultant',
+        'domain', 'expert', 'working', 'knowledge', 'involved', 'sr', 'jr',
+        'senior', 'assistant', 'intern', 'technician'
     }
 
-    # Try regex patterns
-    for line in lines:
-        line = line.strip()
-        if not line or len(line) < 3:
+    # Clean lines and look in the top of the document
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    head_lines = lines[:20]  # inspect top 20 lines
+
+    # Patterns to try (case-insensitive)
+    name_patterns = [
+        r'^\s*Name[:\s\-]+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})\s*$',  # "Name: John Smith"
+        r'^\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})\s*$',               # line that is Title Case (2-4 words)
+        r'^\s*([A-Z]{2,}(?:\s+[A-Z]{2,}){1,3})\s*$',                   # ALL CAPS line
+    ]
+
+    for line in head_lines:
+        # Remove common trailing suffixes that sometimes follow names
+        cleaned = re.sub(r'\b(Employer Details|Employer|Employer:|Details|Employer Details:)\b', '', line, flags=re.IGNORECASE).strip()
+        # Remove leading labels like "Candidate Name", "Applicant:"
+        cleaned = re.sub(r'^(Candidate|Applicant|Resume of|CV of|Name)\s*[:\-]+\s*', '', cleaned, flags=re.IGNORECASE).strip()
+        if len(cleaned) < 3:
             continue
-        for pattern in name_patterns:
-            match = re.search(pattern, line, re.IGNORECASE)
-            if match:
-                potential_name = match.group(1).strip()
-                if is_valid_name(potential_name, non_name_indicators):
-                    return potential_name
 
-    # Fallback 1: first clean line
-    for line in lines:
-        if line and all(word.lower() not in non_name_indicators for word in line.split()):
-            if 2 <= len(line.split()) <= 4:
-                return line.strip().title()
+        # Skip lines that clearly indicate not a name
+        low = cleaned.lower()
+        if any(tok in low for tok in non_name_indicators):
+            continue
 
-    # Fallback 2: infer from email prefix
-    email = extract_email(text)
-    if email != "Not Found":
-        prefix = email.split('@')[0]
-        parts = re.split(r'[._]', prefix)
+        for pat in name_patterns:
+            m = re.search(pat, cleaned)
+            if m:
+                candidate = m.group(1).strip()
+                if is_valid_name_candidate(candidate, non_name_indicators):
+                    return candidate
+
+    # spaCy NER fallback (if available)
+    if nlp is not None:
+        try:
+            # Run NER on first chunk (faster)
+            doc = nlp("\n".join(head_lines))
+            for ent in doc.ents:
+                if ent.label_ == "PERSON":
+                    candidate = ent.text.strip()
+                    # strip trailing words like "Employer Details"
+                    candidate = re.sub(r'\b(Employer Details|Employer|Employer:|Details)\b', '', candidate, flags=re.IGNORECASE).strip()
+                    if is_valid_name_candidate(candidate, non_name_indicators):
+                        return candidate
+        except Exception:
+            pass
+
+    # Email prefix fallback
+    email_match = re.search(r'([\w\.-]+)@[\w\.-]+\.\w{2,}', text)
+    if email_match:
+        prefix = email_match.group(1)
+        parts = re.split(r'[._\-]', prefix)
         if len(parts) >= 2:
-            return " ".join([p.capitalize() for p in parts[:2]])
+            cand = " ".join([p.capitalize() for p in parts[:2]])
+            if is_valid_name_candidate(cand, non_name_indicators):
+                return cand
+
+    # Safe first-line fallback: pick the first non-heading short line that looks like a name
+    for line in head_lines:
+        cleaned = line.strip()
+        low = cleaned.lower()
+        if len(cleaned.split()) >= 2 and len(cleaned.split()) <= 4 and not any(tok in low for tok in non_name_indicators):
+            # ensure it doesn't contain punctuation or digits
+            if re.match(r"^[A-Za-z\s\-\']+$", cleaned):
+                cand = " ".join([w.capitalize() for w in cleaned.split()])
+                if is_valid_name_candidate(cand, non_name_indicators):
+                    return cand
 
     return "Unknown"
 
-# def extract_name(text):
-#     """Extract name using improved pattern matching"""
-#     # Split text into lines and look for name patterns
-#     lines = text.split('\n')[:10]  # Check first 10 lines only
-    
-#     # Common patterns for names in resumes
-#     name_patterns = [
-#     # Start of line (supports middle names and all caps)
-#     r'^([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})(?:\s|$)',
-    
-#     # After "Name:" (supports middle names)
-#     r'Name[:\s]+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})',
-    
-#     # Standalone names (supports 2–4 words, also all caps)
-#     r'([A-Z][a-z]{2,}(?:\s+[A-Z][a-z]{2,}){1,3})(?:\s*\n|\s*$)',
-    
-#     # All-uppercase names
-#     r'([A-Z]{2,}(?:\s+[A-Z]{2,}){1,3})(?:\s*\n|\s*$)',
-#      ]
-
-#     # name_patterns = [
-#     #     r'^([A-Z][a-z]+\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)(?:\s|$)',  # Start of line
-#     #     r'Name[:\s]+([A-Z][a-z]+\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)',  # After "Name:"
-#     #     r'([A-Z][a-z]{2,}\s+[A-Z][a-z]{2,})(?:\s*\n|\s*$)',  # Standalone names
-#     # ]
-    
-#     # Words that definitely indicate this is NOT a name
-#     non_name_indicators = {
-#         'object', 'oriented', 'analysis', 'information', 'technology', 
-#         'business', 'systems', 'analyst', 'software', 'developer', 'engineer',
-#         'resume', 'curriculum', 'vitae', 'profile', 'summary', 'objective',
-#         'education', 'experience', 'skills', 'projects', 'work', 'employment',
-#         'professional', 'technical', 'senior', 'junior', 'lead', 'manager',
-#         'consultant', 'specialist', 'architect', 'designer', 'coordinator'
-#     }
-    
-#     for line in lines:
-#         line = line.strip()
-#         if not line or len(line) < 5:  # Skip very short lines
-#             continue
-            
-#         for pattern in name_patterns:
-#             match = re.search(pattern, line, re.MULTILINE)
-#             if match:
-#                 potential_name = match.group(1).strip()
-                
-#                 # Check if it's a valid name
-#                 if is_valid_name(potential_name, non_name_indicators):
-#                     return potential_name
-    
-#     return "Unknown"
-
-def is_valid_name(name, non_name_indicators):
-    """Check if extracted name is valid with improved filtering"""
-    if len(name.split()) < 2:
-        return False
-    
-    # Check against non-name indicators
-    name_lower = name.lower()
-    if any(indicator in name_lower for indicator in non_name_indicators):
-        return False
-    
-    # Must contain only letters, spaces, hyphens, apostrophes
-    if not re.match(r"^[a-zA-Z\s\-']+$", name):
-        return False
-    
-    # Each word should be reasonably long (not just initials)
-    words = name.split()
-    if any(len(word) < 2 for word in words):
-        return False
-        
-    # Should not be all uppercase (likely a header)
-    if name.isupper():
-        return False
-    
-    return True
-
+# Other extractors
 def extract_email(text):
-    """Extract email address"""
-    match = re.search(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", text)
+    match = re.search(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}", text)
     return match.group(0) if match else "Not Found"
 
 def extract_phone(text):
-    """Extract phone number"""
     patterns = [
-        r"(\+\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}",
-        r"(\+\d{1,3}[-.\s]?)?\d{10}"
+        r'(\+\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}',
+        r'(\+\d{1,3}[-.\s]?)?\d{10}'
     ]
-    for pattern in patterns:
-        match = re.search(pattern, text)
-        if match:
-            return match.group(0)
+    for pat in patterns:
+        m = re.search(pat, text)
+        if m:
+            return m.group(0)
     return "Not Found"
 
 def extract_skills(text):
-    """Extract skills from text"""
     text_lower = text.lower()
-    found_skills = []
-    for skill in SKILLS_DB:
-        if skill in text_lower:
-            found_skills.append(skill)
-    return found_skills
+    found = [s for s in SKILLS_DB if s in text_lower]
+    return found
 
 def extract_experience(text):
-    """Extract years of experience"""
     patterns = [
-        r"(\d+)\+?\s*(?:years?|yrs?)\s*(?:of\s*)?(?:experience|exp)",
-        r"(?:experience|exp)[:\s]*(\d+)\+?\s*(?:years?|yrs?)"
+        r'(\d{1,2}\+?\s*(?:years?|yrs?))',
+        r'(?:experience[:\s]*)(\d{1,2}\+?\s*(?:years?|yrs?))'
     ]
-    for pattern in patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            return f"{match.group(1)} years"
+    for pat in patterns:
+        m = re.search(pat, text, re.IGNORECASE)
+        if m:
+            return m.group(1)
     return "Not specified"
 
-def process_resume(file_content, filename, stop_words):
+# Resume processing (uses nlp for better name extraction)
+def process_resume(file_content, filename, stop_words, nlp):
     """Process a single resume and extract information"""
-    # Extract text based on file type
-    if filename.endswith('.pdf'):
+    # Read text from file
+    if filename.lower().endswith('.pdf'):
         text = extract_text_from_pdf(file_content)
-    elif filename.endswith('.docx'):
+    elif filename.lower().endswith('.docx'):
         text = extract_text_from_docx(file_content)
     else:
         return None
-    
-    if not text.strip():
+
+    if not text or not text.strip():
         return None
-    
-    # Extract information
-    name = extract_name(text)
+
+    name = extract_name(text, nlp)
     email = extract_email(text)
     phone = extract_phone(text)
     skills = extract_skills(text)
     experience = extract_experience(text)
-    
+
     return {
         'name': name,
         'email': email,
@@ -312,62 +344,49 @@ def process_resume(file_content, filename, stop_words):
         'filename': filename
     }
 
-def calculate_all_hybrid_scores(candidates_data, job_description, sbert_model, stop_words):
-    """Calculate hybrid scores for all candidates together with proper normalization"""
+def calculate_all_hybrid_scores(candidates_data, job_description, sbert_model):
+    """Calculate hybrid scores (SBERT + TF-IDF) and attach to each candidate"""
     try:
-        # Extract resume texts
-        resume_texts = [candidate['raw_text'] for candidate in candidates_data]
-        
-        # Calculate SBERT scores for all resumes
+        resume_texts = [c['raw_text'] for c in candidates_data]
+        # SBERT embeddings
         job_embedding = sbert_model.encode([job_description])
         resume_embeddings = sbert_model.encode(resume_texts)
-        sbert_scores = [cosine_similarity([resume_embeddings[i]], job_embedding)[0][0] 
-                       for i in range(len(resume_embeddings))]
-        
-        # Calculate TF-IDF scores for all resumes
-        vectorizer = TfidfVectorizer(stop_words='english', max_features=1000)
+        sbert_scores = [cosine_similarity([resume_embeddings[i]], job_embedding)[0][0] for i in range(len(resume_embeddings))]
+
+        # TF-IDF
+        vectorizer = TfidfVectorizer(stop_words='english', max_features=2000)
         all_texts = [job_description] + resume_texts
         tfidf_matrix = vectorizer.fit_transform(all_texts)
-        job_vector = tfidf_matrix[0:1]
-        resume_vectors = tfidf_matrix[1:]
-        tfidf_scores = [cosine_similarity(resume_vectors[i:i+1], job_vector)[0][0] 
-                       for i in range(len(resume_texts))]
-        
-        # Normalize scores across all candidates
-        if len(sbert_scores) > 1:
-            sbert_min, sbert_max = min(sbert_scores), max(sbert_scores)
-            if sbert_max != sbert_min:
-                sbert_normalized = [(score - sbert_min) / (sbert_max - sbert_min) for score in sbert_scores]
-            else:
-                sbert_normalized = [0.5] * len(sbert_scores)  # All scores are identical
-        else:
-            sbert_normalized = [1.0]  # Single candidate gets max score
-            
-        if len(tfidf_scores) > 1:
-            tfidf_min, tfidf_max = min(tfidf_scores), max(tfidf_scores)
-            if tfidf_max != tfidf_min:
-                tfidf_normalized = [(score - tfidf_min) / (tfidf_max - tfidf_min) for score in tfidf_scores]
-            else:
-                tfidf_normalized = [0.5] * len(tfidf_scores)  # All scores are identical
-        else:
-            tfidf_normalized = [1.0]  # Single candidate gets max score
-        
-        # Calculate hybrid scores (60% SBERT, 40% TF-IDF)
-        for i, candidate in enumerate(candidates_data):
-            hybrid_score = 0.6 * sbert_normalized[i] + 0.4 * tfidf_normalized[i]
-            candidate['scores'] = {
-                'hybrid_score': hybrid_score,
+        job_vec = tfidf_matrix[0:1]
+        resume_vecs = tfidf_matrix[1:]
+        tfidf_scores = [cosine_similarity(resume_vecs[i:i+1], job_vec)[0][0] for i in range(len(resume_texts))]
+
+        # Normalize scores
+        def normalize(xs):
+            if len(xs) == 1:
+                return [1.0]
+            mn, mx = min(xs), max(xs)
+            if mx == mn:
+                return [0.5] * len(xs)
+            return [(x - mn) / (mx - mn) for x in xs]
+
+        sbert_norm = normalize(sbert_scores)
+        tfidf_norm = normalize(tfidf_scores)
+
+        for i, c in enumerate(candidates_data):
+            hybrid = 0.6 * sbert_norm[i] + 0.4 * tfidf_norm[i]
+            c['scores'] = {
+                'hybrid_score': hybrid,
                 'sbert_score': sbert_scores[i],
                 'tfidf_score': tfidf_scores[i]
             }
-        
         return candidates_data
-    
+
     except Exception as e:
         st.error(f"Error calculating scores: {e}")
-        # Fallback: assign random scores
-        for candidate in candidates_data:
-            candidate['scores'] = {
+        # fallback random small scores to allow UI to show something
+        for c in candidates_data:
+            c['scores'] = {
                 'hybrid_score': np.random.uniform(0.1, 0.9),
                 'sbert_score': np.random.uniform(0.1, 0.9),
                 'tfidf_score': np.random.uniform(0.1, 0.9)
@@ -375,173 +394,102 @@ def calculate_all_hybrid_scores(candidates_data, job_description, sbert_model, s
         return candidates_data
 
 def create_visualization(candidates_data):
-    """Create visualization for candidate rankings"""
     if not candidates_data:
         return None
-    
-    # Prepare data for plotting
-    names = [candidate['name'] for candidate in candidates_data[:10]]
-    scores = [candidate['scores']['hybrid_score'] for candidate in candidates_data[:10]]
-    
-    # Create plotly bar chart
-    fig = go.Figure(data=[
-        go.Bar(
-            y=names[::-1],  # Reverse for top-to-bottom display
-            x=scores[::-1],
-            orientation='h',
-            marker=dict(
-                color=scores[::-1],
-                colorscale='Viridis',
-                showscale=True
-            ),
-            text=[f'{score:.3f}' for score in scores[::-1]],
-            textposition='inside'
-        )
-    ])
-    
-    fig.update_layout(
-        title='Top 10 Candidate Rankings',
-        xaxis_title='Hybrid Similarity Score',
-        yaxis_title='Candidates',
-        height=600,
-        showlegend=False
-    )
-    
+    top = candidates_data[:10]
+    names = [c['name'] for c in top][::-1]
+    scores = [c['scores']['hybrid_score'] for c in top][::-1]
+    fig = go.Figure(go.Bar(x=scores, y=names, orientation='h', marker=dict(color=scores, colorscale='Viridis')))
+    fig.update_layout(title='Top Candidates (Hybrid Score)', xaxis_title='Hybrid Score', yaxis_title='Candidate')
     return fig
 
+# Main app
 def main():
-    # Header
     st.markdown('<h1 class="main-header">🎯 AI Resume Screening Tool</h1>', unsafe_allow_html=True)
-    st.markdown('<p class="sub-header">Upload resumes and job descriptions to find the best candidates using advanced AI algorithms</p>', unsafe_allow_html=True)
-    
-    # Load models
-    stop_words, sbert_model = load_models()
-    
+    st.markdown('<p class="sub-header">Upload resumes and job descriptions to find the best candidates</p>', unsafe_allow_html=True)
+
+    stop_words, sbert_model, nlp = load_models()
     if sbert_model is None:
-        st.error("Failed to load required models. Please refresh the page.")
+        st.error("SBERT failed to load. The app cannot continue.")
         return
-    
-    # Sidebar
-    st.sidebar.header("📊 Application Settings")
+
+    st.sidebar.header("Settings")
     max_candidates = st.sidebar.slider("Max candidates to show", 5, 20, 10)
-    show_detailed_scores = st.sidebar.checkbox("Show detailed scores", True)
-    
-    # Main content
-    col1, col2 = st.columns([1, 1])
-    
+    show_details = st.sidebar.checkbox("Show detailed scores", True)
+
+    col1, col2 = st.columns(2)
     with col1:
-        st.header("📄 Job Description")
-        job_description = st.text_area(
-            "Enter the job description:",
-            height=300,
-            placeholder="Paste your job description here..."
-        )
-    
+        job_description = st.text_area("Enter the job description:", height=260, help="Paste the JD here.")
     with col2:
-        st.header("📋 Upload Resumes")
-        uploaded_files = st.file_uploader(
-            "Upload resume files (PDF or DOCX)",
-            accept_multiple_files=True,
-            type=['pdf', 'docx']
-        )
-    
-    if st.button("🚀 Analyze Resumes", type="primary"):
-        if not job_description.strip():
-            st.error("Please enter a job description.")
+        uploaded_files = st.file_uploader("Upload resumes (pdf/docx)", accept_multiple_files=True, type=['pdf', 'docx'])
+
+    if st.button("Analyze"):
+        if not job_description or not uploaded_files:
+            st.error("Provide job description and at least one resume.")
             return
-        
-        if not uploaded_files:
-            st.error("Please upload at least one resume.")
-            return
-        
-        # Process resumes
+
+        candidates = []
         with st.spinner("Processing resumes..."):
-            candidates_data = []
-            
-            for uploaded_file in uploaded_files:
-                # Save uploaded file to temporary location
-                with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
-                    tmp_file.write(uploaded_file.getvalue())
-                    tmp_file_path = tmp_file.name
-                
-                # Process resume
-                resume_data = process_resume(uploaded_file, uploaded_file.name, stop_words)
-                
-                if resume_data:
-                    candidates_data.append(resume_data)
-                
-                # Clean up temporary file
-                os.unlink(tmp_file_path)
-            
-            if not candidates_data:
-                st.error("No valid resumes could be processed.")
+            for up in uploaded_files:
+                # create temporary file for robust extraction
+                tmpfile = tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(up.name)[1])
+                tmpfile.write(up.getvalue())
+                tmpfile.close()
+                # process by passing the file object (Streamlit uploaded file or temp file)
+                # prefer passing the temp file path to avoid library edge cases
+                with open(tmpfile.name, 'rb') as fobj:
+                    data = process_resume(fobj, up.name, stop_words, nlp)
+                os.unlink(tmpfile.name)
+                if data:
+                    candidates.append(data)
+
+            if not candidates:
+                st.error("No valid resumes processed.")
                 return
-            
-            # Calculate scores for all candidates at once
-            candidates_data = calculate_all_hybrid_scores(candidates_data, job_description, sbert_model, stop_words)
-            
-            # Sort candidates by hybrid score
-            candidates_data.sort(key=lambda x: x['scores']['hybrid_score'], reverse=True)
-            
-            # Display results
-            st.success(f"Successfully processed {len(candidates_data)} resumes!")
-            
-            # Show top candidates
+
+            # scoring
+            candidates = calculate_all_hybrid_scores(candidates, job_description, sbert_model)
+            candidates.sort(key=lambda x: x['scores']['hybrid_score'], reverse=True)
+
+            st.success(f"Processed {len(candidates)} resumes")
             st.header("🏆 Top Candidates")
-            
-            for i, candidate in enumerate(candidates_data[:max_candidates], 1):
-                score = candidate['scores']['hybrid_score']
-                
+            for i, c in enumerate(candidates[:max_candidates], 1):
+                s = c['scores']['hybrid_score']
                 st.markdown(f"""
                 <div class="candidate-card">
-                    <h3>#{i} {candidate['name']} <span class="score-badge">{score:.3f}</span></h3>
-                    <p><strong>📧 Email:</strong> {candidate['email']}</p>
-                    <p><strong>📱 Phone:</strong> {candidate['phone']}</p>
-                    <p><strong>💼 Experience:</strong> {candidate['experience']}</p>
-                    <p><strong>🛠️ Skills:</strong> {', '.join(candidate['skills'][:10]) if candidate['skills'] else 'Not specified'}</p>
+                  <h3>#{i} {c['name']} <span class="score-badge">{s:.3f}</span></h3>
+                  <p><strong>📧 Email:</strong> {c['email']}</p>
+                  <p><strong>📱 Phone:</strong> {c['phone']}</p>
+                  <p><strong>💼 Experience:</strong> {c['experience']}</p>
+                  <p><strong>🛠️ Skills:</strong> {', '.join(c['skills']) if c['skills'] else 'Not specified'}</p>
                 </div>
                 """, unsafe_allow_html=True)
-                
-                if show_detailed_scores:
-                    with st.expander(f"Detailed scores for {candidate['name']}"):
+                if show_details:
+                    with st.expander(f"Detailed scores for {c['name']}"):
                         col1, col2, col3 = st.columns(3)
-                        with col1:
-                            st.metric("Hybrid Score", f"{candidate['scores']['hybrid_score']:.3f}")
-                        with col2:
-                            st.metric("SBERT Score", f"{candidate['scores']['sbert_score']:.3f}")
-                        with col3:
-                            st.metric("TF-IDF Score", f"{candidate['scores']['tfidf_score']:.3f}")
-            
-            # Visualization
-            st.header("📊 Candidate Rankings Visualization")
-            fig = create_visualization(candidates_data)
+                        col1.metric("Hybrid Score", f"{c['scores']['hybrid_score']:.3f}")
+                        col2.metric("SBERT Score", f"{c['scores']['sbert_score']:.3f}")
+                        col3.metric("TF-IDF Score", f"{c['scores']['tfidf_score']:.3f}")
+
+            # visualization and download
+            fig = create_visualization(candidates)
             if fig:
                 st.plotly_chart(fig, use_container_width=True)
-            
-            # Download results
-            st.header("💾 Download Results")
-            results_df = pd.DataFrame([
-                {
-                    'Rank': i+1,
-                    'Name': candidate['name'],
-                    'Email': candidate['email'],
-                    'Phone': candidate['phone'],
-                    'Experience': candidate['experience'],
-                    'Skills': ', '.join(candidate['skills']),
-                    'Hybrid Score': candidate['scores']['hybrid_score'],
-                    'SBERT Score': candidate['scores']['sbert_score'],
-                    'TF-IDF Score': candidate['scores']['tfidf_score']
-                }
-                for i, candidate in enumerate(candidates_data[:max_candidates])
-            ])
-            
-            csv_data = results_df.to_csv(index=False)
-            st.download_button(
-                label="📥 Download Results as CSV",
-                data=csv_data,
-                file_name="resume_screening_results.csv",
-                mime="text/csv"
-            )
+
+            df = pd.DataFrame([{
+                'Rank': idx+1,
+                'Name': c['name'],
+                'Email': c['email'],
+                'Phone': c['phone'],
+                'Experience': c['experience'],
+                'Skills': ', '.join(c['skills']),
+                'Hybrid': c['scores']['hybrid_score'],
+                'SBERT': c['scores']['sbert_score'],
+                'TFIDF': c['scores']['tfidf_score']
+            } for idx, c in enumerate(candidates[:max_candidates])])
+
+            csv = df.to_csv(index=False)
+            st.download_button("Download CSV", csv, file_name="resume_screening_results.csv", mime="text/csv")
 
 if __name__ == "__main__":
     main()
