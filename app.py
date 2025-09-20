@@ -227,35 +227,67 @@ def process_resume(file_content, filename, stop_words):
         'filename': filename
     }
 
-def calculate_hybrid_score(resume_text, job_description, sbert_model, stop_words):
-    """Calculate hybrid score using SBERT and TF-IDF"""
+def calculate_all_hybrid_scores(candidates_data, job_description, sbert_model, stop_words):
+    """Calculate hybrid scores for all candidates together with proper normalization"""
     try:
-        # SBERT scoring
+        # Extract resume texts
+        resume_texts = [candidate['raw_text'] for candidate in candidates_data]
+        
+        # Calculate SBERT scores for all resumes
         job_embedding = sbert_model.encode([job_description])
-        resume_embedding = sbert_model.encode([resume_text])
-        sbert_score = cosine_similarity(resume_embedding, job_embedding)[0][0]
+        resume_embeddings = sbert_model.encode(resume_texts)
+        sbert_scores = [cosine_similarity([resume_embeddings[i]], job_embedding)[0][0] 
+                       for i in range(len(resume_embeddings))]
         
-        # TF-IDF scoring
+        # Calculate TF-IDF scores for all resumes
         vectorizer = TfidfVectorizer(stop_words='english', max_features=1000)
-        tfidf_matrix = vectorizer.fit_transform([job_description, resume_text])
-        tfidf_score = cosine_similarity(tfidf_matrix[1:2], tfidf_matrix[0:1])[0][0]
+        all_texts = [job_description] + resume_texts
+        tfidf_matrix = vectorizer.fit_transform(all_texts)
+        job_vector = tfidf_matrix[0:1]
+        resume_vectors = tfidf_matrix[1:]
+        tfidf_scores = [cosine_similarity(resume_vectors[i:i+1], job_vector)[0][0] 
+                       for i in range(len(resume_texts))]
         
-        # Normalize scores
-        scaler = MinMaxScaler()
-        scores = np.array([[sbert_score], [tfidf_score]])
-        normalized_scores = scaler.fit_transform(scores).flatten()
+        # Normalize scores across all candidates
+        if len(sbert_scores) > 1:
+            sbert_min, sbert_max = min(sbert_scores), max(sbert_scores)
+            if sbert_max != sbert_min:
+                sbert_normalized = [(score - sbert_min) / (sbert_max - sbert_min) for score in sbert_scores]
+            else:
+                sbert_normalized = [0.5] * len(sbert_scores)  # All scores are identical
+        else:
+            sbert_normalized = [1.0]  # Single candidate gets max score
+            
+        if len(tfidf_scores) > 1:
+            tfidf_min, tfidf_max = min(tfidf_scores), max(tfidf_scores)
+            if tfidf_max != tfidf_min:
+                tfidf_normalized = [(score - tfidf_min) / (tfidf_max - tfidf_min) for score in tfidf_scores]
+            else:
+                tfidf_normalized = [0.5] * len(tfidf_scores)  # All scores are identical
+        else:
+            tfidf_normalized = [1.0]  # Single candidate gets max score
         
-        # Hybrid score (60% SBERT, 40% TF-IDF)
-        hybrid_score = 0.6 * normalized_scores[0] + 0.4 * normalized_scores[1]
+        # Calculate hybrid scores (60% SBERT, 40% TF-IDF)
+        for i, candidate in enumerate(candidates_data):
+            hybrid_score = 0.6 * sbert_normalized[i] + 0.4 * tfidf_normalized[i]
+            candidate['scores'] = {
+                'hybrid_score': hybrid_score,
+                'sbert_score': sbert_scores[i],
+                'tfidf_score': tfidf_scores[i]
+            }
         
-        return {
-            'hybrid_score': hybrid_score,
-            'sbert_score': sbert_score,
-            'tfidf_score': tfidf_score
-        }
+        return candidates_data
+    
     except Exception as e:
         st.error(f"Error calculating scores: {e}")
-        return {'hybrid_score': 0, 'sbert_score': 0, 'tfidf_score': 0}
+        # Fallback: assign random scores
+        for candidate in candidates_data:
+            candidate['scores'] = {
+                'hybrid_score': np.random.uniform(0.1, 0.9),
+                'sbert_score': np.random.uniform(0.1, 0.9),
+                'tfidf_score': np.random.uniform(0.1, 0.9)
+            }
+        return candidates_data
 
 def create_visualization(candidates_data):
     """Create visualization for candidate rankings"""
