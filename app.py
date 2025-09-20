@@ -1,23 +1,23 @@
+# =================== Imports =================== #
 import os
 import re
+import subprocess
 import nltk
 import docx
 import pdfplumber
 import pandas as pd
 import streamlit as st
-import subprocess
 
-# Sentence-Transformers
 from sentence_transformers import SentenceTransformer, util
 
-# ✅ Ensure NLTK Dependencies
+# =================== NLTK Setup =================== #
 nltk.download("punkt", quiet=True)
 nltk.download("stopwords", quiet=True)
 from nltk.corpus import stopwords
 from nltk.tokenize import word_tokenize
 stop_words = set(stopwords.words("english"))
 
-# ✅ spaCy for Name Extraction
+# =================== spaCy Setup =================== #
 try:
     import spacy
     try:
@@ -27,9 +27,9 @@ try:
         nlp = spacy.load("en_core_web_sm")
 except ImportError:
     nlp = None
-    st.warning("⚠️ spaCy not installed. Name extraction will fall back to regex.")
+    st.warning("⚠️ spaCy not installed. Name extraction will fallback to regex.")
 
-# ✅ Skills Database
+# =================== Skills Database =================== #
 skills_db = {
     "python", "java", "sql", "machine learning", "nlp",
     "deep learning", "excel", "c++", "cloud", "aws",
@@ -37,7 +37,7 @@ skills_db = {
     "react", "mongodb", "postgresql", "rest api"
 }
 
-# ------------------- Extract Text ------------------- #
+# =================== Text Extraction =================== #
 def extract_text_from_pdf(pdf_path):
     text = ""
     try:
@@ -56,7 +56,7 @@ def extract_text_from_docx(docx_path):
         st.error(f"❌ Error reading DOCX {docx_path}: {e}")
         return ""
 
-# ------------------- Preprocessing ------------------- #
+# =================== Preprocessing =================== #
 def preprocess_text(text):
     text = text.lower()
     text = re.sub(r'\W+', ' ', text)
@@ -67,9 +67,9 @@ def preprocess_text(text):
     except Exception:
         return text
 
-# ------------------- Information Extraction ------------------- #
+# =================== Information Extraction =================== #
 def extract_name(text):
-    """Try spaCy PERSON entity, else regex fallback."""
+    """Try spaCy PERSON entity first, else regex fallback."""
     if nlp:
         try:
             doc = nlp(text)
@@ -79,28 +79,31 @@ def extract_name(text):
         except Exception:
             pass
 
-    # Regex fallback
-    name_patterns = [
-        r'^([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})(?:\s|$)',
-        r'Name[:\s]+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})',
-        r'([A-Z][a-z]{2,}(?:\s+[A-Z][a-z]{2,}){1,3})(?:\s*\n|\s*$)',
-        r'([A-Z]{2,}(?:\s+[A-Z]{2,}){1,3})(?:\s*\n|\s*$)'
-    ]
-    for pattern in name_patterns:
-        match = re.search(pattern, text)
-        if match:
-            return match.group(1).strip()
+    # Regex fallback (first lines with capitalized words)
+    lines = text.strip().split("\n")
+    for line in lines[:5]:
+        line = line.strip()
+        if 2 <= len(line.split()) <= 4 and all(w[0].isupper() for w in line.split() if w.isalpha()):
+            return line
     return "Unknown"
 
 def extract_email(text):
     match = re.search(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", text)
     return match.group(0) if match else "Not Found"
 
+def extract_phone(text):
+    match = re.search(r'(\+?\d{1,3}[-.\s]?)?(\(?\d{3}\)?[-.\s]?)?\d{3}[-.\s]?\d{4}', text)
+    return match.group(0) if match else "Not Found"
+
+def extract_experience(text):
+    match = re.search(r'(\d+)\s*(?:\+)?\s*(?:years|yrs|year)', text, re.IGNORECASE)
+    return match.group(0) if match else "Not Specified"
+
 def extract_skills(text):
     text_lower = text.lower()
     return [skill for skill in skills_db if skill in text_lower]
 
-# ------------------- Resume Processing ------------------- #
+# =================== Resume Processing =================== #
 def process_resumes(resume_folder):
     resume_data = []
 
@@ -123,18 +126,22 @@ def process_resumes(resume_folder):
 
         name = extract_name(text)
         email = extract_email(text)
+        phone = extract_phone(text)
+        experience = extract_experience(text)
         skills = extract_skills(text)
 
         resume_data.append({
             "Name": name,
             "Email": email,
+            "Phone": phone,
+            "Experience": experience,
             "Skills": skills,
             "RawText": text
         })
 
     return resume_data
 
-# ------------------- Streamlit App ------------------- #
+# =================== Streamlit App =================== #
 def main():
     st.title("📄 Resume Screening App")
 
@@ -149,7 +156,7 @@ def main():
 
         df = pd.DataFrame(resume_info)
 
-        # ✅ Load Model
+        # ✅ Load SentenceTransformer Model
         model = SentenceTransformer("all-MiniLM-L6-v2")
 
         # Job embedding
@@ -166,17 +173,19 @@ def main():
         df_sorted = df.sort_values(by="Score", ascending=False)
 
         st.subheader("🏆 Top Candidates")
-        for i, row in df_sorted.head(10).iterrows():
+        for i, row in enumerate(df_sorted.head(10).itertuples(), 1):
             st.markdown(f"""
-            **#{i+1} {row['Name']} {row['Score']:.3f}**  
-            📧 Email: {row['Email']}  
-            🛠 Skills: {', '.join(row['Skills']) if row['Skills'] else 'Not Found'}  
+            **#{i} {row.Name} {row.Score:.3f}**  
+            📧 Email: {row.Email}  
+            📱 Phone: {row.Phone}  
+            💼 Experience: {row.Experience}  
+            🛠 Skills: {', '.join(row.Skills) if row.Skills else 'Not Found'}  
             """)
 
-        # Save results
-        csv_path = "/content/drive/MyDrive/resume_extracted_data.csv"
-        df_sorted.to_csv(csv_path, index=False)
-        st.success(f"✅ Data saved to {csv_path}")
+        # Optionally save results
+        save_path = os.path.join(resume_folder, "resume_extracted_data.csv")
+        df_sorted.to_csv(save_path, index=False)
+        st.success(f"✅ Data saved to {save_path}")
 
 if __name__ == "__main__":
     main()
