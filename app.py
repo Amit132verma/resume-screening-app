@@ -31,6 +31,23 @@ def download_nltk_data():
         st.warning(f"NLTK download issue: {e}. Using basic preprocessing.")
         return set()
 
+# Try to load SpaCy for better name extraction
+@st.cache_resource
+def load_spacy_model():
+    try:
+        import spacy
+        nlp = spacy.load("en_core_web_sm")
+        return nlp
+    except:
+        try:
+            import spacy
+            import subprocess
+            subprocess.run(["python", "-m", "spacy", "download", "en_core_web_sm"], check=True)
+            nlp = spacy.load("en_core_web_sm")
+            return nlp
+        except:
+            return None
+
 # Load SBERT model
 @st.cache_resource
 def load_model():
@@ -103,15 +120,37 @@ def preprocess_text(text):
     return " ".join([w for w in words if len(w) > 2])
 
 def extract_name(text):
-    """Extract name using regex"""
+    """Extract name using improved logic"""
+    # Common keywords to avoid (job titles, section headers)
+    avoid_keywords = {
+        'objective', 'summary', 'experience', 'education', 'skills', 'profile',
+        'professional', 'senior', 'junior', 'developer', 'engineer', 'analyst',
+        'manager', 'consultant', 'specialist', 'architect', 'designer', 'lead',
+        'java', 'python', 'software', 'full stack', 'oriented', 'analysis',
+        'resume', 'curriculum', 'vitae', 'contact', 'phone', 'email', 'address'
+    }
+    
     lines = text.split('\n')
-    # Check first few lines for name
-    for line in lines[:5]:
+    
+    # Check first 10 lines for name
+    for line in lines[:10]:
         line = line.strip()
-        # Look for capitalized words (likely a name)
-        match = re.search(r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b', line)
-        if match:
-            return match.group(1)
+        if not line or len(line) < 3 or len(line) > 50:
+            continue
+            
+        # Look for 2-4 capitalized words (typical name format)
+        matches = re.findall(r'\b[A-Z][a-z]+\b', line)
+        
+        if 2 <= len(matches) <= 4:
+            potential_name = ' '.join(matches)
+            
+            # Check if line contains avoid keywords
+            line_lower = line.lower()
+            if not any(keyword in line_lower for keyword in avoid_keywords):
+                # Additional check: name should not have numbers
+                if not re.search(r'\d', potential_name):
+                    return potential_name
+    
     return "Unknown"
 
 def extract_email(text):
