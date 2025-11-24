@@ -2,6 +2,6 @@ streamlit
 pdfplumber
 python-docx
 pandas
-nltk
+nltk==3.8.1
 sentence-transformers
 torch
