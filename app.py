@@ -4,41 +4,43 @@ import re
 import pdfplumber
 import docx
 import nltk
-import torch
 import pandas as pd
 from nltk.corpus import stopwords
-from nltk.tokenize import word_tokenize
 from sentence_transformers import SentenceTransformer, util
 
-# ---------------------------
-# NLTK SETUP
-# ---------------------------
-nltk.download("punkt")
-nltk.download("stopwords")
-stop_words = set(stopwords.words("english"))
+# -----------------------------------------------
+# NLTK STOPWORDS (NO punkt, NO downloads)
+# -----------------------------------------------
+try:
+    stop_words = set(stopwords.words("english"))
+except:
+    nltk.download("stopwords")
+    stop_words = set(stopwords.words("english"))
 
-# ---------------------------
+# -----------------------------------------------
 # SKILLS DB
-# ---------------------------
+# -----------------------------------------------
 skills_db = {
     "python", "java", "sql", "machine learning", "nlp", "deep learning",
     "excel", "c++", "cloud", "aws"
 }
 
-# ---------------------------
-# SBERT MODEL
-# ---------------------------
+# -----------------------------------------------
+# LOAD SBERT
+# -----------------------------------------------
 model = SentenceTransformer('all-MiniLM-L6-v2')
 
 
-# ---------------------------------------------------------
-# TEXT EXTRACTION FUNCTIONS
-# ---------------------------------------------------------
+# -----------------------------------------------
+# TEXT EXTRACTION
+# -----------------------------------------------
 def extract_text_from_pdf(file):
     text = ""
     with pdfplumber.open(file) as pdf:
         for page in pdf.pages:
-            text += page.extract_text() + "\n"
+            extracted = page.extract_text()
+            if extracted:
+                text += extracted + "\n"
     return text
 
 
@@ -47,14 +49,20 @@ def extract_text_from_docx(file):
     return "\n".join([p.text for p in doc.paragraphs])
 
 
+# -----------------------------------------------
+# FIXED PREPROCESSING (NO punkt)
+# -----------------------------------------------
 def preprocess_text(text):
     text = text.lower()
-    text = re.sub(r'\W+', ' ', text)
-    tokens = word_tokenize(text)
+    text = re.sub(r"[^a-zA-Z0-9\s]", " ", text)   # clean punctuation
+    tokens = text.split()                         # simple tokenization
     tokens = [w for w in tokens if w not in stop_words]
     return " ".join(tokens)
 
 
+# -----------------------------------------------
+# NAME / EMAIL / SKILLS EXTRACTION
+# -----------------------------------------------
 def extract_name(text):
     match = re.search(r"\b([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)\b", text)
     return match.group(0) if match else "Unknown"
@@ -70,11 +78,10 @@ def extract_skills(text):
     return list(skills_db.intersection(words))
 
 
-# ---------------------------------------------------------
-# PROCESS A SINGLE RESUME
-# ---------------------------------------------------------
+# -----------------------------------------------
+# PROCESS RESUME
+# -----------------------------------------------
 def process_resume(uploaded_file):
-    # Detect file type
     if uploaded_file.name.endswith(".pdf"):
         text = extract_text_from_pdf(uploaded_file)
     elif uploaded_file.name.endswith(".docx"):
@@ -92,18 +99,17 @@ def process_resume(uploaded_file):
     }
 
 
-# ---------------------------------------------------------
-# RANK CANDIDATES USING SBERT
-# ---------------------------------------------------------
+# -----------------------------------------------
+# SBERT RANKING
+# -----------------------------------------------
 def rank_candidates(job_description, resumes):
     cleaned_job_desc = preprocess_text(job_description)
-    job_embedding = model.encode(cleaned_job_desc, convert_to_tensor=True)
+    job_emb = model.encode(cleaned_job_desc, convert_to_tensor=True)
 
     ranked = []
-
     for res in resumes:
-        resume_embedding = model.encode(res["RawText"], convert_to_tensor=True)
-        similarity = util.pytorch_cos_sim(job_embedding, resume_embedding)[0][0].item()
+        resume_emb = model.encode(res["RawText"], convert_to_tensor=True)
+        similarity = util.pytorch_cos_sim(job_emb, resume_emb)[0][0].item()
 
         ranked.append({
             "Name": res["Name"],
@@ -113,16 +119,16 @@ def rank_candidates(job_description, resumes):
         })
 
     ranked = sorted(ranked, key=lambda x: x["Similarity"], reverse=True)
-    return ranked[:5]  # Top 5
+    return ranked[:5]
 
 
-# ---------------------------------------------------------
+# =====================================================
 # STREAMLIT UI
-# ---------------------------------------------------------
-st.set_page_config(page_title="Resume Screening App", layout="wide")
+# =====================================================
 
+st.set_page_config(page_title="Resume Screening App", layout="wide")
 st.title("📄 Resume Screening System (SBERT)")
-st.write("Upload multiple resumes + enter job description → get top 5 candidates.")
+st.write("Upload resumes + enter a job description → get top 5 matching candidates.")
 
 uploaded_files = st.file_uploader(
     "Upload multiple resumes (PDF/DOCX)",
@@ -130,13 +136,17 @@ uploaded_files = st.file_uploader(
     accept_multiple_files=True
 )
 
-job_description = st.text_area("Enter Job Description")
+job_description = st.text_area(
+    "Enter Job Description",
+    placeholder="Paste the job description here..."
+)
 
 if st.button("Run Screening"):
+
     if not uploaded_files:
-        st.error("Upload at least one resume.")
+        st.error("Please upload at least one resume.")
     elif not job_description.strip():
-        st.error("Enter a job description.")
+        st.error("Please enter a job description.")
     else:
         resumes = []
 
@@ -155,7 +165,8 @@ if st.button("Run Screening"):
 
         for i, cand in enumerate(top5, 1):
             st.markdown(f"""
-                <div style='padding:15px; border-radius:10px; border:1px solid #ccc; margin-bottom:15px;'>
+                <div style='background:#f8f9fa; padding:15px; border-radius:10px;
+                            border:1px solid #ddd; margin-bottom:15px;'>
                     <h3>{i}. {cand['Name']}</h3>
                     <b>Email:</b> {cand['Email']}<br>
                     <b>Skills:</b> {', '.join(cand['Skills'])}<br>
